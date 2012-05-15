@@ -156,6 +156,7 @@
             event.data.loaded = true;
             event.data.refresh(null, event.data);
             $.rib.enableKeys(event.data.options.contentDocument);
+            event.data.options.contentDocument[0].contentEditable = false;
         },
 
         _createPrimaryTools: function() {
@@ -198,13 +199,58 @@
             return $(null);
         },
 
-        _selectionChangedHandler: function(event, widget) {
-            var uid;
-            widget = widget || this;
+        _elementToNode: function(el) {
+            var adm = this.options.model, node = null;
 
-            // Always un-style currently selected nodes
-            widget.options.contentDocument.find('.ui-selected')
-                .removeClass('ui-selected');
+            if (el && el.dataset && el.dataset.uid) {
+                node = adm.getDesignRoot().findNodeByUid(el.dataset.uid);
+            }
+
+            return node;
+        },
+
+        _applyTextContentChanges: function(node, target) {
+            var editable = node && node.isEditable(),
+                prop, text;
+
+            if (!node || !editable) return;
+
+            text = target && target.textContent;
+            prop = editable.propertyName;
+
+            // Only update if values differ
+            if (node.getProperty(prop) !== text) {
+                // Revert if setProperty fails
+                if (!node.setProperty(prop,text).result) {
+                    target.textContent = node.getProperty(prop);
+                }
+            }
+        },
+
+        _selectionChangedHandler: function(event, widget) {
+            var uid, el, adm, doc;
+            widget = widget || this;
+            adm = widget.options.model,
+            doc = widget.options.contentDocument;
+
+            // Take care of previous selected item first
+            $('.ui-selected', doc).each(function(index, element) {
+                var node, sel, target;
+
+                node = widget._elementToNode(element);
+                sel = node && node.isEditable() && node.isEditable().selector;
+                target = (sel && sel.length)?$(sel,element):$(element);
+
+                // Save changes to textContent of previous selected item
+                if (target[0].contentEditable === 'true') {
+                    widget._applyTextContentChanges(node, target[0]);
+                    target.removeAttr('contentEditable');
+                    widget.options.iframe.focus();
+                }
+
+                // Always un-style currently selected nodes
+                $(this).removeClass('ui-selected');
+            });
 
             // Only apply selection style changes on valid nodes
             if (!event || (!event.uid && !event.node)) {
@@ -217,15 +263,58 @@
             uid = uid || (event.node)?event.node.getUid():null;
 
             if (uid) {
-                widget.options.contentDocument
+                el = widget.options.contentDocument
                     .find('.adm-node[data-uid=\''+uid+'\']')
                     .not('[data-role=\'page\']')
-                    .addClass('ui-selected').first().each(function() {
-                        // Scroll selected node into view
-                        setTimeout($.proxy(function() {
-                            this.scrollIntoViewIfNeeded()
-                        }, this), 100);
-                    });
+                    .addClass('ui-selected').first();
+                el.each(function(index, element) {
+                    var editable = false,
+                        node, target, eData;
+
+                    // Scroll selected node into view
+                    setTimeout($.proxy(function() {
+                        element.scrollIntoViewIfNeeded()
+                    }, element), 100);
+
+                    // Get node ref to selected node
+                    node = widget._elementToNode(element);
+                    // Get editable property object
+                    editable = node && node.isEditable();
+                    // Set contentEditable, blur handler and focus
+                    if (editable && (typeof(editable) === 'object')) {
+                        // Sometimes, the DOM element that we really want to
+                        // change is a descendant of the ADM node, so we have
+                        // an optional selector to which we'll apply changes
+                        target = $(editable.selector, element);
+                        if (!target.length) {
+                            target = $(element);
+                        }
+
+                        // Subsequent clicks will turn editing on/off
+                        target.click(node, function(e) {
+                            // Already editing, unset contentEditable and save
+                            if (this.contentEditable === 'true') {
+                                widget._applyTextContentChanges(e.data,
+                                                                e.target);
+                                target.removeAttr('contentEditable');
+                                widget.options.iframe.focus();
+                            // Not editing yet, set contentEditable
+                            } else {
+                                this.contentEditable = true;
+                                target.focus();
+                            }
+                        });
+
+                        // When focus is lost, unset contentEditable and save
+                        target.blur(node, function(e) {
+                            if (this.contentEditable === 'true') {
+                                widget._applyTextContentChanges(e.data,
+                                                                e.target);
+                                $(e.target).removeAttr('contentEditable');
+                            }
+                        });
+                    }
+                });
             }
         },
 
